@@ -154,8 +154,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('pause').disabled = !(active || recorder || capturePending || playback || playbackPending || awaiting);
     $('repeat').hidden = !lastAudio || !!recorder || capturePending;
     $('repeat').disabled = !!playback || playbackPending || awaiting || busy;
-    if (!room) return;
     demoEvent('availability', {speakable:canSpeak()});
+    if (!room) return;
     if (!connected) {
       status(connecting ? 'Восстанавливаю соединение…' : 'Связь прервана · микрофон выключен');
       $('help').textContent = 'Комната сохранена на две минуты. После возврата нажмите «Восстановить соединение». Фраза автоматически не повторяется.';
@@ -217,7 +217,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       await unlockAudio();
       if (token !== epoch || !room || (paused && !allowPaused)) return;
       buffer = await context.decodeAudioData(base64ToBytes(audio.data).buffer);
-    } finally { if (token === epoch) { playbackPending = false; render(); } }
+    } finally { if (token === epoch) playbackPending = false; }
     if (token !== epoch || !room || (paused && !allowPaused)) return;
     if (context.state !== 'running') throw new Error('Нажмите «Прослушать перевод», чтобы включить звук.');
     stopPlayback();
