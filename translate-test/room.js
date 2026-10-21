@@ -93,6 +93,13 @@ import { LANGUAGE_CATALOG } from './languages.js';
     DUPLICATE_REQUEST: 'Эта фраза уже отправлена. Дождитесь результата.',
   };
   const limits = {rate: 16000, seconds: 20, samples: 320000};
+  const demoMode = new URLSearchParams(location.search).get('demo') === '1';
+  const demoParentOrigin = 'https://translate.45.88.201.146.sslip.io';
+  function demoEvent(event, details = {}) {
+    if (demoMode && window.parent && window.parent !== window) {
+      window.parent.postMessage({type:'translator-demo-event',event,...details}, demoParentOrigin);
+    }
+  }
   const fragment = new URLSearchParams(location.hash.slice(1));
   const pilotToken = fragment.get('pilot');
   const preset = normalizeLanguage(fragment.get('lang'));
@@ -107,7 +114,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   let trial = false, trialRemainingTurns = 0;
   let epoch = 0, recorder, context, playback, lastAudio, recordingTimer, timerInterval;
   let active = false, restartTimer;
-  const resumeKey = 'translator-room-seat-v1';
+  const resumeKey = demoMode ? 'translator-room-seat-demo-v1' : 'translator-room-seat-v1';
   const resumeGraceMs = 120000;
   let reservation, reconnectTimer, reconnectDeadline = 0, reconnectAttempt = 0, suspended = false;
   function saveReservation() {
@@ -148,9 +155,11 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('repeat').hidden = !lastAudio || !!recorder || capturePending;
     $('repeat').disabled = !!playback || playbackPending || awaiting || busy;
     if (!room) return;
+    demoEvent('availability', {speakable:canSpeak()});
     if (!connected) {
       status(connecting ? 'Восстанавливаю соединение…' : 'Связь прервана · микрофон выключен');
       $('help').textContent = 'Комната сохранена на две минуты. После возврата нажмите «Восстановить соединение». Фраза автоматически не повторяется.';
+      if (demoMode) $('help').textContent = 'Тестовая запись · микрофон выключен. ' + $('help').textContent;
       return;
     }
     if (recorder) status(recorder.hasSpeech ? 'Слушаю фразу…' : 'Говорите — я слушаю', 'recording');
@@ -168,6 +177,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       ? 'Платная голосовая проба сейчас закрыта. Микрофон не включён. Соединение комнаты можно проверить бесплатно.'
       : !ready ? 'Отправьте приглашение на второй телефон. Язык собеседника уже выбран.'
       : 'Говорите по очереди. После короткой паузы фраза отправится сама. «Пауза» выключает микрофон.';
+    if (demoMode) $('help').textContent = 'Тестовая запись · микрофон выключен. ' + $('help').textContent;
   }
   function send(message) {
     if (socket?.readyState !== WebSocket.OPEN) throw new Error('Связь с комнатой потеряна. Подключитесь заново.');
@@ -266,11 +276,13 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   function scheduleListening(delay = 100) {
     clearTimeout(restartTimer);
+    if (demoMode) return;
     if (!active || paused || document.hidden || recorder || !canSpeak()) return;
     const token = epoch;
     restartTimer = setTimeout(() => { if (token === epoch && active && !paused) void startRecording(); }, delay);
   }
   async function startRecording() {
+    if (demoMode) return;
     if (!active || paused || recorder || !canSpeak()) return;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { pause(); error('Для микрофона откройте HTTPS-ссылку в Safari или Chrome.'); return; }
     capturePending = true;
@@ -343,6 +355,14 @@ import { LANGUAGE_CATALOG } from './languages.js';
     }
     $('sourceTitle').textContent = `Оригинал · ${names[message.sourceLanguage] || 'речь'}`;
     $('translationTitle').textContent = `Перевод · ${names[message.targetLanguage] || 'текст'}`;
+  }
+  function demoTextEvent(event, message) {
+    demoEvent(event, {
+      sourceLanguage:languageByCode.has(message.sourceLanguage) ? message.sourceLanguage : '',
+      targetLanguage:languageByCode.has(message.targetLanguage) ? message.targetLanguage : '',
+      sourceText:typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '',
+      translatedText:typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '',
+    });
   }
   function cleanup() {
     pause(); clearTimeout(connectionTimer); clearTimeout(reconnectTimer);
@@ -439,6 +459,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
         const invite = new URL(location.href); invite.hash = new URLSearchParams({room: message.roomId, invite: message.inviteToken, lang: peerLanguage, peer: selectedLanguage}).toString();
         $('inviteLink').value = invite.href;
         $('languages').textContent = `Ваш язык: ${names[message.language] || names[$('language').value]}`;
+        demoEvent('joined', {roomId:message.roomId,inviteToken:message.inviteToken,language:message.language});
       } else if (message.type === 'state') {
         trial = message.trial === true;
         trialRemainingTurns = message.trialRemainingTurns ?? 0;
@@ -451,18 +472,22 @@ import { LANGUAGE_CATALOG } from './languages.js';
           clearTimeout(restartTimer);
         }
         $('languages').textContent = `Ваш язык: ${names[room?.language] || names[$('language').value]}${names[message.peerLanguage] ? ` · Собеседник: ${names[message.peerLanguage]}` : ''}`;
+        demoEvent('state', {ready,speechReady,busy,remaining:trialRemainingTurns,trialRemainingTurns});
       } else if (message.type === 'delivered') {
         if (!pendingRequestId || message.requestId !== pendingRequestId) return;
         awaiting = false; pendingRequestId = null; lastAudio = null; showTranscript(message);
+        demoTextEvent('delivered', message);
       } else if (message.type === 'cancelled') {
         if (pendingRequestId && message.requestId === pendingRequestId) { awaiting = false; pendingRequestId = null; }
       } else if (message.type === 'translation') {
         const wasPaused = paused;
         ++epoch; capturePending = false; clearTimeout(restartTimer); discardRecording(); stopPlayback();
         showTranscript(message); lastAudio = message.audio;
+        demoTextEvent('translation', message);
         const token = epoch;
         if (!wasPaused && lastAudio) void playAudio(lastAudio, token).catch(() => { if (token === epoch) { pause(); error('Автоматический звук не включился. Нажмите «Прослушать перевод».'); render(); } });
       } else if (message.type === 'error') {
+        demoEvent('error', {code:typeof message.code === 'string' && /^[A-Z_]{1,80}$/.test(message.code) ? message.code : 'TRANSLATION_FAILED'});
         if (['ROOM_NOT_FOUND','INVALID_MEMBER_TOKEN','ROOM_EXPIRED'].includes(message.code)) {
           leave(resuming ? 'Сохранённая комната уже закрыта или время возврата истекло. Попросите новое приглашение.' : errorMessages[message.code]); return;
         }
@@ -485,6 +510,32 @@ import { LANGUAGE_CATALOG } from './languages.js';
     };
   }
   $('connect').addEventListener('click', () => connect());
+  window.addEventListener('message', (event) => {
+    if (!demoMode || !window.parent || window.parent === window || event.source !== window.parent || event.origin !== demoParentOrigin) return;
+    const command = event.data;
+    if (!command || typeof command !== 'object' || Array.isArray(command) || command.type !== 'translator-demo-command') return;
+    if (command.action === 'connect') { connect(); return; }
+    if (command.action !== 'fixture') return;
+    if (!canSpeak()) { demoEvent('error', {code:'DEMO_NOT_READY'}); return; }
+    const audio = command.audio;
+    if (!audio || audio.encoding !== 'pcm16' || audio.sampleRate !== 16000 || audio.channels !== 1
+      || typeof audio.data !== 'string' || audio.data.length > 426668
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(audio.data)) {
+      demoEvent('error', {code:'DEMO_INVALID_AUDIO'}); return;
+    }
+    let bytes;
+    try { bytes = base64ToBytes(audio.data); } catch { demoEvent('error', {code:'DEMO_INVALID_AUDIO'}); return; }
+    if (bytes.length < 3200 || bytes.length > 320000 || bytes.length % 2 || bytesToBase64(bytes) !== audio.data) {
+      demoEvent('error', {code:'DEMO_INVALID_AUDIO'}); return;
+    }
+    const requestId = `demo-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    try {
+      error(); awaiting = true; pendingRequestId = requestId;
+      send({type:'audio',requestId,audio:{encoding:'pcm16',sampleRate:16000,channels:1,data:audio.data}});
+      demoEvent('fixture_sent', {bytes:bytes.length});
+    } catch { awaiting = false; pendingRequestId = null; pause(); demoEvent('error', {code:'DEMO_SEND_FAILED'}); }
+    render();
+  });
   $('checkConnection').addEventListener('click', () => {
     const button=$('checkConnection');button.disabled=true;
     const result=$('connectionResult');
@@ -561,6 +612,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
   if (reservation) {
     $('setupTitle').textContent = 'Вернуться в разговор';
     $('setupHint').textContent = 'Место временно сохранено. Нажмите один раз, чтобы вернуться в ту же комнату. Прошлая фраза не отправится повторно.';
+  }
+  if (demoMode) {
+    $('setupHint').textContent = 'Тестовая запись · микрофон выключен. Управление проверкой — на общей странице двух участников.';
+    demoEvent('loaded');
   }
 })();
 
