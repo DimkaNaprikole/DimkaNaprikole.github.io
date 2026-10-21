@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Комната перевода</title>
-  <link rel="stylesheet" href="./room.css?v=8cef09de6bd1">
-  <script src="./room.js?v=c4edf2ed07b8" type="module"></script>
+  <link rel="stylesheet" href="./room.css?v=df87dd6ec862">
+  <script src="./room.js?v=ae7137bbe3a2" type="module"></script>
 </head>
 <body>
 <main>
@@ -20,7 +20,7 @@
     <p id="presetSummary" class="presetSummary"></p>
     <button id="connect" class="primary" disabled>Начать разговор</button>
     <p class="hint">Нажмите, чтобы подключиться. Если голосовой перевод доступен, разрешите микрофон — дальше фразы отправляются сами после паузы в речи.</p>
-    <details id="languageSettings"><summary>Изменить языки</summary>
+    <details id="languageSettings"><summary>Языки и голос</summary>
     <label for="languageSearch">Найти язык</label>
     <input id="languageSearch" type="search" placeholder="Русский, English, العربية…" autocomplete="off" spellcheck="false" aria-describedby="languageSearchStatus">
     <p id="languageSearchStatus" class="hint searchStatus" role="status" aria-live="polite">Загружаем каталог языков…</p>
@@ -28,6 +28,9 @@
     <select id="language" aria-describedby="languageHint" disabled><option value="">Загружаем языки…</option></select>
     <p id="languageHint" class="hint languageHint"></p>
     <label for="peerLanguage">Язык собеседника</label><select id="peerLanguage"></select>
+    <label for="voiceProfile">Голос перевода моих реплик</label>
+    <select id="voiceProfile" aria-describedby="voiceProfileHint"><option value="auto">Авто по тембру</option><option value="soft">Мягкий голос</option><option value="low">Низкий голос</option></select>
+    <p id="voiceProfileHint" class="hint languageHint">Подбираем похожую подачу, не копируем голос человека. Выбор можно поправить.</p>
     </details>
     <noscript><p class="hint">Для выбора языков и подключения включите JavaScript.</p></noscript>
     <p id="setupHint" class="hint">Отправьте собеседнику приглашение из комнаты. Его язык уже будет выбран.</p>
@@ -44,6 +47,7 @@
       <p class="hint">Ссылка даёт доступ к разговору. Передавайте её только собеседнику. Когда оба выйдут, комната удаляется.</p>
     </div>
     <div class="statusBox" role="status" aria-live="polite"><span id="statusDot" class="dot"></span><span id="status">Подключение…</span></div>
+    <p id="voiceBadge" class="hint voiceBadge" hidden></p>
     <p id="help" class="hint help"></p>
     <section class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Оригинал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
     <section class="card transcript translated" aria-labelledby="translationTitle"><p id="translationTitle" class="eyebrow">Перевод</p><p id="translatedText" class="speechText placeholder" dir="auto">Здесь появится перевод</p><button id="repeat" class="secondary" hidden>Прослушать перевод</button></section>

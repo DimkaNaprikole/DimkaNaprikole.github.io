@@ -106,6 +106,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
   const preset = normalizeLanguage(fragment.get('lang'));
   selectedLanguage = languageByCode.has(preset) ? preset : 'ru';
   let peerLanguage = normalizeLanguage(fragment.get('peer')) || 'nb';
+  const voiceProfiles = new Set(['auto','soft','low']);
+  let selectedVoiceProfile = 'auto';
+  const voiceLabels = {marin:'Мягкий голос',cedar:'Низкий голос'};
   if (!languageByCode.has(peerLanguage) || peerLanguage === selectedLanguage) peerLanguage = selectedLanguage === 'ru' ? 'nb' : 'ru';
   if (pilotToken) { selectedLanguage = 'ru'; peerLanguage = 'nb'; }
   const incoming = {roomId: fragment.get('room'), inviteToken: fragment.get('invite')};
@@ -134,8 +137,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
       && Number.isFinite(saved.expiresAt) && saved.expiresAt > Date.now() && saved.expiresAt <= Date.now() + resumeGraceMs
       && (!incoming.roomId || incoming.roomId === saved.roomId)) {
       reservation = {roomId:saved.roomId, memberToken:saved.memberToken, language:saved.language,
-        peerLanguage:saved.peerLanguage, expiresAt:saved.expiresAt};
+        peerLanguage:saved.peerLanguage, voiceProfile:voiceProfiles.has(saved.voiceProfile) ? saved.voiceProfile : 'auto', expiresAt:saved.expiresAt};
       selectedLanguage = saved.language; peerLanguage = saved.peerLanguage;
+      selectedVoiceProfile = reservation.voiceProfile;
     } else if (saved) { sessionStorage.removeItem(resumeKey); }
   } catch {}
 
@@ -148,6 +152,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('language').disabled = connecting;
     $('languageSearch').disabled = connecting;
     $('peerLanguage').disabled = connecting;
+    $('voiceProfile').disabled = connecting;
     $('record').hidden = active && !paused;
     const connected = socket?.readyState === WebSocket.OPEN;
     $('record').disabled = !room || connecting || (connected && !speechReady);
@@ -360,6 +365,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
     }
     $('sourceTitle').textContent = `Оригинал · ${names[message.sourceLanguage] || 'речь'}`;
     $('translationTitle').textContent = `Перевод · ${names[message.targetLanguage] || 'текст'}`;
+    const voiceLabel = typeof message.selectedVoice === 'string' && Object.hasOwn(voiceLabels, message.selectedVoice) ? voiceLabels[message.selectedVoice] : '';
+    $('voiceBadge').textContent = voiceLabel;
+    $('voiceBadge').hidden = !voiceLabel;
   }
   function demoTextEvent(event, message) {
     demoEvent(event, {
@@ -367,6 +375,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       targetLanguage:languageByCode.has(message.targetLanguage) ? message.targetLanguage : '',
       sourceText:typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '',
       translatedText:typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '',
+      ...(typeof message.selectedVoice === 'string' && Object.hasOwn(voiceLabels,message.selectedVoice) ? {selectedVoice:message.selectedVoice} : {}),
     });
   }
   function replayLastAudio() {
@@ -404,6 +413,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       ? 'Ваш язык уже выбран в приглашении. Нажмите один раз и разрешите микрофон.'
       : 'Отправьте собеседнику приглашение из комнаты. Его язык уже будет выбран.';
     $('inviteLink').value = '';
+    $('voiceBadge').hidden = true; $('voiceBadge').textContent = '';
     $('sourceText').textContent = 'Здесь появится произнесённая фраза'; $('sourceText').classList.add('placeholder');
     $('translatedText').textContent = 'Здесь появится перевод'; $('translatedText').classList.add('placeholder');
     render(); error(message);
@@ -459,8 +469,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
       if (socket !== current) return;
       const language = $('language').value;
       send(resuming ? {type:'resume',roomId:reservation.roomId,memberToken:reservation.memberToken}
-        : incoming.roomId && incoming.inviteToken ? {type: 'join', ...incoming, language}
-        : {type: 'create', language, autoLanguage:true, ...(pilotToken ? {pilotToken} : {})});
+        : incoming.roomId && incoming.inviteToken ? {type: 'join', ...incoming, language, voiceProfile:selectedVoiceProfile}
+        : {type: 'create', language, autoLanguage:true, voiceProfile:selectedVoiceProfile, ...(pilotToken ? {pilotToken} : {})});
     };
     current.onmessage = (event) => {
       if (socket !== current || typeof event.data !== 'string' || event.data.length > 4500000) return;
@@ -472,8 +482,11 @@ import { LANGUAGE_CATALOG } from './languages.js';
         clearTimeout(connectionTimer); connecting = false; room = message;
         reconnectDeadline = 0; reconnectAttempt = 0;
         if (typeof message.memberToken === 'string') {
+          if (voiceProfiles.has(message.voiceProfile)) {
+            selectedVoiceProfile = message.voiceProfile; $('voiceProfile').value = selectedVoiceProfile;
+          }
           reservation = {roomId:message.roomId,memberToken:message.memberToken,language:message.language,
-            peerLanguage,expiresAt:Date.now()+resumeGraceMs}; saveReservation();
+            peerLanguage,voiceProfile:selectedVoiceProfile,expiresAt:Date.now()+resumeGraceMs}; saveReservation();
         }
         if (resuming) {
           pause();
@@ -488,6 +501,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
       } else if (message.type === 'state') {
         trial = message.trial === true;
         autoLanguage = message.autoLanguage === true;
+        if (voiceProfiles.has(message.voiceProfile)) {
+          selectedVoiceProfile = message.voiceProfile; $('voiceProfile').value = selectedVoiceProfile;
+          if (reservation) reservation.voiceProfile = selectedVoiceProfile;
+        }
         trialRemainingTurns = message.trialRemainingTurns ?? 0;
         limits.seconds = trial ? 10 : 20; limits.samples = limits.seconds * limits.rate;
         if (!recorder) $('timer').textContent = `Одна фраза — до ${limits.seconds} секунд`;
@@ -637,6 +654,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('peerLanguage').appendChild(option);
   }
   $('peerLanguage').value = peerLanguage;
+  $('voiceProfile').value = selectedVoiceProfile;
+  $('voiceProfile').addEventListener('change', () => {
+    if (voiceProfiles.has($('voiceProfile').value)) selectedVoiceProfile = $('voiceProfile').value;
+  });
   function updatePreset() {
     if (peerLanguage === selectedLanguage) {
       peerLanguage = selectedLanguage === 'ru' ? 'nb' : 'ru';
