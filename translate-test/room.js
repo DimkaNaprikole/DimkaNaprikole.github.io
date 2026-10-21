@@ -94,6 +94,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   };
   const limits = {rate: 16000, seconds: 20, samples: 320000};
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
+  if (demoMode) document.documentElement.classList.add('demo');
   const demoParentOrigin = 'https://translate.45.88.201.146.sslip.io';
   function demoEvent(event, details = {}) {
     if (demoMode && window.parent && window.parent !== window) {
@@ -111,7 +112,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   const invalidInvite = !!incoming.roomId !== !!incoming.inviteToken;
   let socket, connectionTimer, room, ready = false, speechReady = false, busy = false;
   let connecting = false, awaiting = false, pendingRequestId, paused = false, capturePending = false, playbackPending = false;
-  let trial = false, trialRemainingTurns = 0;
+  let trial = false, trialRemainingTurns = 0, autoLanguage = false;
   let epoch = 0, recorder, context, playback, lastAudio, recordingTimer, timerInterval;
   let active = false, restartTimer;
   const resumeKey = demoMode ? 'translator-room-seat-demo-v1' : 'translator-room-seat-v1';
@@ -155,7 +156,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('repeat').hidden = !lastAudio || !!recorder || capturePending;
     $('repeat').disabled = !!playback || playbackPending || awaiting || busy;
     demoEvent('availability', {speakable:canSpeak()});
-    if (!room) return;
+    if (!room) {
+      if (demoMode && lastAudio) status(playback || playbackPending ? 'Звучит полученный перевод' : 'Проба завершена · запись можно прослушать', playback || playbackPending ? 'active' : '');
+      return;
+    }
     if (!connected) {
       status(connecting ? 'Восстанавливаю соединение…' : 'Связь прервана · микрофон выключен');
       $('help').textContent = 'Комната сохранена на две минуты. После возврата нажмите «Восстановить соединение». Фраза автоматически не повторяется.';
@@ -177,6 +181,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       ? 'Платная голосовая проба сейчас закрыта. Микрофон не включён. Соединение комнаты можно проверить бесплатно.'
       : !ready ? 'Отправьте приглашение на второй телефон. Язык собеседника уже выбран.'
       : 'Говорите по очереди. После короткой паузы фраза отправится сама. «Пауза» выключает микрофон.';
+    if (autoLanguage && speechReady) $('help').textContent += ' Язык речи определится автоматически среди двух языков разговора.';
     if (demoMode) $('help').textContent = 'Тестовая запись · микрофон выключен. ' + $('help').textContent;
   }
   function send(message) {
@@ -215,10 +220,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     let buffer;
     try {
       await unlockAudio();
-      if (token !== epoch || !room || (paused && !allowPaused)) return;
+      if (token !== epoch || (!room && !demoMode) || (paused && !allowPaused)) return;
       buffer = await context.decodeAudioData(base64ToBytes(audio.data).buffer);
     } finally { if (token === epoch) playbackPending = false; }
-    if (token !== epoch || !room || (paused && !allowPaused)) return;
+    if (token !== epoch || (!room && !demoMode) || (paused && !allowPaused)) return;
     if (context.state !== 'running') throw new Error('Нажмите «Прослушать перевод», чтобы включить звук.');
     stopPlayback();
     const source = context.createBufferSource();
@@ -364,15 +369,35 @@ import { LANGUAGE_CATALOG } from './languages.js';
       translatedText:typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '',
     });
   }
+  function replayLastAudio() {
+    if (!lastAudio || playback || playbackPending || awaiting || busy) {
+      demoEvent('error', {code:'DEMO_REPLAY_UNAVAILABLE'}); return;
+    }
+    ++epoch; clearTimeout(restartTimer); discardRecording(); error();
+    const token = epoch;
+    void playAudio(lastAudio, token, true).catch(() => {
+      if (token === epoch) { pause(); error('Не удалось воспроизвести перевод. Проверьте громкость и разрешение звука.'); render(); }
+    });
+  }
   function cleanup() {
     pause(); clearTimeout(connectionTimer); clearTimeout(reconnectTimer);
     const current = socket; socket = null;
     if (current) { current.onclose = null; current.onerror = null; current.onmessage = null; current.close(); }
-    room = null; ready = false; speechReady = false; busy = false; awaiting = false; connecting = false; lastAudio = null;
-    if (context) { void context.close().catch(() => {}); context = null; }
+    room = null; ready = false; speechReady = false; busy = false; awaiting = false; connecting = false;
+    if (!demoMode) lastAudio = null;
+    if (context && !(demoMode && lastAudio)) { void context.close().catch(() => {}); context = null; }
   }
   function leave(message = '') {
+    const keepDemoEvidence = demoMode && (lastAudio || !$('translatedText').classList.contains('placeholder'));
     cleanup(); clearReservation();
+    if (keepDemoEvidence) {
+      $('setup').hidden = true; $('conversation').hidden = false; $('inviteLink').value = '';
+      render(); status('Проба завершена · результат сохранён на экране');
+      $('help').textContent = lastAudio
+        ? 'Тестовая запись · микрофон выключен. Полученный голос можно прослушать повторно бесплатно; после закрытия страницы запись исчезнет.'
+        : 'Тестовая запись · микрофон выключен. Текст результата остаётся на экране до закрытия страницы.';
+      error(message); return;
+    }
     $('setup').hidden = false; $('conversation').hidden = true;
     $('setupTitle').textContent = incoming.roomId ? 'Присоединиться к разговору' : 'Начнём разговор';
     $('setupHint').textContent = incoming.roomId
@@ -435,7 +460,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       const language = $('language').value;
       send(resuming ? {type:'resume',roomId:reservation.roomId,memberToken:reservation.memberToken}
         : incoming.roomId && incoming.inviteToken ? {type: 'join', ...incoming, language}
-        : {type: 'create', language, ...(pilotToken ? {pilotToken} : {})});
+        : {type: 'create', language, autoLanguage:true, ...(pilotToken ? {pilotToken} : {})});
     };
     current.onmessage = (event) => {
       if (socket !== current || typeof event.data !== 'string' || event.data.length > 4500000) return;
@@ -462,6 +487,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
         demoEvent('joined', {roomId:message.roomId,inviteToken:message.inviteToken,language:message.language});
       } else if (message.type === 'state') {
         trial = message.trial === true;
+        autoLanguage = message.autoLanguage === true;
         trialRemainingTurns = message.trialRemainingTurns ?? 0;
         limits.seconds = trial ? 10 : 20; limits.samples = limits.seconds * limits.rate;
         if (!recorder) $('timer').textContent = `Одна фраза — до ${limits.seconds} секунд`;
@@ -472,10 +498,12 @@ import { LANGUAGE_CATALOG } from './languages.js';
           clearTimeout(restartTimer);
         }
         $('languages').textContent = `Ваш язык: ${names[room?.language] || names[$('language').value]}${names[message.peerLanguage] ? ` · Собеседник: ${names[message.peerLanguage]}` : ''}`;
-        demoEvent('state', {ready,speechReady,busy,remaining:trialRemainingTurns,trialRemainingTurns});
+        demoEvent('state', {ready,speechReady,busy,remaining:trialRemainingTurns,trialRemainingTurns,autoLanguage});
       } else if (message.type === 'delivered') {
         if (!pendingRequestId || message.requestId !== pendingRequestId) return;
-        awaiting = false; pendingRequestId = null; lastAudio = null; showTranscript(message);
+        awaiting = false; pendingRequestId = null;
+        if (!demoMode) lastAudio = null;
+        showTranscript(message);
         demoTextEvent('delivered', message);
       } else if (message.type === 'cancelled') {
         if (pendingRequestId && message.requestId === pendingRequestId) { awaiting = false; pendingRequestId = null; }
@@ -515,6 +543,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     const command = event.data;
     if (!command || typeof command !== 'object' || Array.isArray(command) || command.type !== 'translator-demo-command') return;
     if (command.action === 'connect') { connect(); return; }
+    if (command.action === 'replay') { replayLastAudio(); return; }
     if (command.action !== 'fixture') return;
     if (!canSpeak()) { demoEvent('error', {code:'DEMO_NOT_READY'}); return; }
     const audio = command.audio;
@@ -566,10 +595,29 @@ import { LANGUAGE_CATALOG } from './languages.js';
   });
   $('record').addEventListener('click', () => socket?.readyState === WebSocket.OPEN ? activate() : connect());
   $('pause').addEventListener('click', pause);
-  $('repeat').addEventListener('click', () => { ++epoch; clearTimeout(restartTimer); discardRecording(); error(); const token = epoch; void playAudio(lastAudio, token, true).catch(() => { if (token === epoch) { pause(); error('Не удалось воспроизвести перевод. Проверьте громкость и разрешение звука.'); render(); } }); });
+  $('repeat').addEventListener('click', replayLastAudio);
   $('copy').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText($('inviteLink').value); $('copy').textContent = 'Скопировано'; }
-    catch { $('inviteLink').focus(); $('inviteLink').select(); error('Выделенная ссылка готова для копирования вручную.'); }
+    const url = $('inviteLink').value;
+    if (!url || !room) return;
+    const button = $('copy'); button.disabled = true;
+    $('inviteStatus').textContent = '';
+    try {
+      if (typeof navigator.share === 'function') {
+        try {
+          await navigator.share({title:'Приглашение в разговор',text:'Откройте ссылку, чтобы присоединиться к переводу.',url});
+          $('inviteStatus').textContent = 'Приглашение передано выбранному приложению.';
+          return;
+        } catch (cause) {
+          if (cause?.name === 'AbortError') { $('inviteStatus').textContent = 'Отправка отменена.'; return; }
+        }
+      }
+      if (!room || $('inviteLink').value !== url) return;
+      await navigator.clipboard.writeText(url);
+      $('inviteStatus').textContent = 'Ссылка скопирована. Вставьте её в сообщение собеседнику.';
+    } catch {
+      $('inviteLink').focus(); $('inviteLink').select();
+      error('Браузер не разрешил копирование. Ссылка выделена — скопируйте её вручную.');
+    } finally { button.disabled = false; }
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { pause(); clearTimeout(reconnectTimer); }
@@ -615,6 +663,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   if (demoMode) {
     $('setupHint').textContent = 'Тестовая запись · микрофон выключен. Управление проверкой — на общей странице двух участников.';
+    $('repeat').textContent = 'Повторить полученный голос';
     demoEvent('loaded');
   }
 })();
