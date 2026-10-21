@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#edf8f4">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Комната перевода</title>
+  <link rel="stylesheet" href="./room.css">
+  <script src="./room.js" type="module"></script>
+</head>
+<body>
+<main>
+  <header><span class="mark" aria-hidden="true">↔</span><div><p class="eyebrow">Голосовой переводчик</p><h1>Понимать друг друга</h1></div></header>
+  <p class="hint">Тестовый экран GitHub · голосовой сервер Gigahost</p>
+  <p class="intro">Два человека, одна комната. Говорите по очереди — собеседник услышит перевод на своём языке.</p>
+  <section id="setup" class="card" aria-labelledby="setupTitle">
+    <h2 id="setupTitle">Начнём разговор</h2>
+    <p id="presetSummary" class="presetSummary"></p>
+    <button id="connect" class="primary" disabled>Начать разговор</button>
+    <p class="hint">Нажмите, чтобы подключиться. Если голосовой перевод доступен, разрешите микрофон — дальше фразы отправляются сами после паузы в речи.</p>
+    <details id="languageSettings"><summary>Изменить языки</summary>
+    <label for="languageSearch">Найти язык</label>
+    <input id="languageSearch" type="search" placeholder="Русский, English, العربية…" autocomplete="off" spellcheck="false" aria-describedby="languageSearchStatus">
+    <p id="languageSearchStatus" class="hint searchStatus" role="status" aria-live="polite">Загружаем каталог языков…</p>
+    <label for="language">Мой язык</label>
+    <select id="language" aria-describedby="languageHint" disabled><option value="">Загружаем языки…</option></select>
+    <p id="languageHint" class="hint languageHint"></p>
+    <label for="peerLanguage">Язык собеседника</label><select id="peerLanguage"></select>
+    </details>
+    <noscript><p class="hint">Для выбора языков и подключения включите JavaScript.</p></noscript>
+    <p id="setupHint" class="hint">Отправьте собеседнику приглашение из комнаты. Его язык уже будет выбран.</p>
+    <button id="checkConnection" class="secondary" type="button">Проверить соединение</button>
+    <p id="connectionResult" class="hint" role="status" aria-live="polite"></p>
+  </section>
+  <section id="conversation" hidden>
+    <div class="card invite">
+      <div class="sectionHeading"><h2>Ваша комната</h2><button id="leave" class="textButton">Выйти</button></div>
+      <p id="languages" class="hint"></p>
+      <label for="inviteLink">Ссылка для собеседника</label>
+      <div class="linkRow"><input id="inviteLink" type="text" readonly autocomplete="off" aria-label="Ссылка для собеседника"><button id="copy" class="secondary">Копировать</button></div>
+      <p class="hint">Ссылка даёт доступ к разговору. Передавайте её только собеседнику. Когда оба выйдут, комната удаляется.</p>
+    </div>
+    <div class="statusBox" role="status" aria-live="polite"><span id="statusDot" class="dot"></span><span id="status">Подключение…</span></div>
+    <p id="help" class="hint help"></p>
+    <section class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Оригинал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
+    <section class="card transcript translated" aria-labelledby="translationTitle"><p id="translationTitle" class="eyebrow">Перевод</p><p id="translatedText" class="speechText placeholder" dir="auto">Здесь появится перевод</p><button id="repeat" class="secondary" hidden>Прослушать перевод</button></section>
+    <div class="controls"><button id="record" class="primary" disabled>Продолжить разговор</button><button id="pause" class="secondary" disabled>Пауза</button><p id="timer" class="hint">Одна фраза — до 20 секунд</p></div>
+  </section>
+  <p id="error" class="error" role="alert" hidden></p>
+  <footer>«Пауза» выключает микрофон и звук. Аудио и история здесь не сохраняются. Для работы нужен интернет.</footer>
+</main>
+</body>
+</html>
+
