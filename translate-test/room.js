@@ -492,13 +492,15 @@ import { LANGUAGE_CATALOG } from './languages.js';
   function showTranscript(message) {
     markDemoResult(message); hasIncoming = true;
     $('incomingPanel').hidden = false; $('outgoingPanel').open = false;
+    const missingSource = message.streamed && !(typeof message.sourceText==='string' && message.sourceText.trim());
+    $('sourcePanel').hidden = !!missingSource;
     for (const [id, value] of [['sourceText', message.sourceText], ['translatedText', message.translatedText]]) {
       if (typeof value === 'string') {
         $(id).textContent = message.streamed && !value.trim() ? (id==='sourceText' ? 'Исходный текст недоступен в потоковом режиме' : 'Перевод появляется во время речи…') : value.slice(0,12000);
         $(id).classList.remove('placeholder');
       }
     }
-    $('sourceTitle').textContent = message.streamed && !message.sourceText?.trim() ? 'Собеседник сказал' : `Собеседник сказал · ${names[message.sourceLanguage] || 'речь'}`;
+    $('sourceTitle').textContent = missingSource ? 'Собеседник сказал' : `Собеседник сказал · ${names[message.sourceLanguage] || 'речь'}`;
     $('translationTitle').textContent = `Перевод для вас · ${names[message.targetLanguage] || 'текст'}`;
     const voiceLabel = typeof message.selectedVoice === 'string' && Object.hasOwn(voiceLabels, message.selectedVoice) ? voiceLabels[message.selectedVoice] : '';
     $('voiceBadge').textContent = voiceLabel;
@@ -506,10 +508,12 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   function showOutgoing(message) {
     markDemoResult(message);
-    const source = message.streamed && (typeof message.sourceText!=='string'||!message.sourceText.trim()) ? 'Исходный текст недоступен в потоковом режиме' : typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '';
+    const missingSource = message.streamed && !(typeof message.sourceText==='string' && message.sourceText.trim());
+    const source = typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '';
     const translated = typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '';
     $('outgoingPanel').hidden = false; $('outgoingPanel').open = !hasIncoming;
-    $('outgoingSummary').textContent = `Вы сказали: ${source.slice(0,90)}${source.length > 90 ? '…' : ''}`;
+    $('outgoingSummary').textContent = missingSource ? 'Ваша реплика переведена' : `Вы сказали: ${source.slice(0,90)}${source.length > 90 ? '…' : ''}`;
+    $('outgoingSourceTitle').hidden=!!missingSource; $('outgoingSourceText').hidden=!!missingSource;
     $('outgoingSourceText').textContent = source; $('outgoingTranslatedText').textContent = translated;
     $('outgoingSourceTitle').textContent = `Вы сказали · ${names[message.sourceLanguage] || 'речь'}`;
     $('outgoingTranslationTitle').textContent = `Собеседник услышит · ${names[message.targetLanguage] || 'текст'}`;

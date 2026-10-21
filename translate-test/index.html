@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Комната перевода</title>
   <link rel="stylesheet" href="./room.css?v=e7d243b68fe3">
-  <script src="./room.js?v=ddf659bdd078" type="module"></script>
+  <script src="./room.js?v=83ac87bc25cf" type="module"></script>
 </head>
 <body>
 <main>
@@ -54,7 +54,7 @@
     <p id="voiceBadge" class="hint voiceBadge" hidden></p>
     <p id="help" class="hint help"></p>
     <div id="incomingPanel" hidden>
-      <section class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Собеседник сказал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
+      <section id="sourcePanel" class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Собеседник сказал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
       <section class="card transcript translated" aria-labelledby="translationTitle"><p id="translationTitle" class="eyebrow">Перевод для вас</p><p id="translatedText" class="speechText placeholder" dir="auto">Здесь появится перевод</p><button id="repeat" class="secondary" hidden>Прослушать перевод</button></section>
     </div>
     <details id="outgoingPanel" class="card outgoing" hidden>
