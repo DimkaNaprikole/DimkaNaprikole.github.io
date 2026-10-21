@@ -117,7 +117,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   let connecting = false, awaiting = false, pendingRequestId, paused = false, capturePending = false, playbackPending = false;
   let trial = false, trialRemainingTurns = 0, autoLanguage = false;
   let epoch = 0, recorder, context, playback, lastAudio, recordingTimer, timerInterval;
-  let active = false, restartTimer;
+  let active = false, restartTimer, demoHasResult = false, demoCompleted = false;
   const resumeKey = demoMode ? 'translator-room-seat-demo-v1' : 'translator-room-seat-v1';
   const resumeGraceMs = 120000;
   let reservation, reconnectTimer, reconnectDeadline = 0, reconnectAttempt = 0, suspended = false;
@@ -153,11 +153,12 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('languageSearch').disabled = connecting;
     $('peerLanguage').disabled = connecting;
     $('voiceProfile').disabled = connecting;
-    $('record').hidden = active && !paused;
+    $('record').hidden = demoCompleted || (active && !paused);
     const connected = socket?.readyState === WebSocket.OPEN;
     $('record').disabled = !room || connecting || (connected && !speechReady);
     $('record').textContent = connected ? 'Продолжить разговор' : 'Восстановить соединение';
     $('pause').disabled = !(active || recorder || capturePending || playback || playbackPending || awaiting);
+    $('pause').hidden = demoCompleted && !playback && !playbackPending;
     $('repeat').hidden = !lastAudio || !!recorder || capturePending;
     $('repeat').disabled = !!playback || playbackPending || awaiting || busy;
     demoEvent('availability', {speakable:canSpeak()});
@@ -175,6 +176,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     else if (capturePending) status('Подключаю микрофон…');
     else if (playback || playbackPending) status('Звучит перевод', 'active');
     else if (awaiting) status('Перевожу фразу…', 'active');
+    else if (demoMode && busy) status('Перевожу фразу…', 'active');
     else if (trial && !speechReady) status(trialRemainingTurns ? 'Теперь очередь собеседника' : 'Проба завершена или время истекло');
     else if (!speechReady) status('Голосовая проба закрыта · микрофон выключен');
     else if (!ready) status('Ждём собеседника');
@@ -360,6 +362,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     discardRecording(); stopPlayback(); render();
   }
   function showTranscript(message) {
+    if (demoMode && typeof message.sourceText === 'string' && message.sourceText.trim()
+      && typeof message.translatedText === 'string' && message.translatedText.trim()
+      && languageByCode.has(message.sourceLanguage) && languageByCode.has(message.targetLanguage)
+      && message.sourceLanguage !== message.targetLanguage) demoHasResult = true;
     for (const [id, value] of [['sourceText', message.sourceText], ['translatedText', message.translatedText]]) {
       if (typeof value === 'string') { $(id).textContent = value.slice(0, 12000); $(id).classList.remove('placeholder'); }
     }
@@ -396,7 +402,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     if (!demoMode) lastAudio = null;
     if (context && !(demoMode && lastAudio)) { void context.close().catch(() => {}); context = null; }
   }
-  function leave(message = '') {
+  function leave(message = '', completed = false) {
+    if (demoMode && demoHasResult && completed && !demoCompleted) {
+      demoCompleted = true; demoEvent('completed');
+    }
     const keepDemoEvidence = demoMode && (lastAudio || !$('translatedText').classList.contains('placeholder'));
     cleanup(); clearReservation();
     if (keepDemoEvidence) {
@@ -405,7 +414,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       $('help').textContent = lastAudio
         ? 'Тестовая запись · микрофон выключен. Полученный голос можно прослушать повторно бесплатно; после закрытия страницы запись исчезнет.'
         : 'Тестовая запись · микрофон выключен. Текст результата остаётся на экране до закрытия страницы.';
-      error(message); return;
+      error(demoCompleted ? '' : message); return;
     }
     $('setup').hidden = false; $('conversation').hidden = true;
     $('setupTitle').textContent = incoming.roomId ? 'Присоединиться к разговору' : 'Начнём разговор';
@@ -435,6 +444,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
     }, delay);
   }
   function disconnected() {
+    if (demoMode && demoHasResult && trial && trialRemainingTurns === 0 && !busy && !awaiting) {
+      leave('', true); return;
+    }
     pause(); dropSocket(); ready = false; speechReady = false; busy = false;
     if (!reservation) { leave('Не удалось подключиться. Проверьте интернет и повторите подключение.'); return; }
     if (!reconnectDeadline) reconnectDeadline = Date.now() + resumeGraceMs;
@@ -443,6 +455,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     render(); retryConnection();
   }
   function connect(automatic = false) {
+    if (demoCompleted) return;
     if (connecting || socket?.readyState === WebSocket.OPEN || invalidInvite) return;
     if (reservation && reservation.expiresAt <= Date.now()) { leave('Время возврата в комнату истекло. Попросите новое приглашение.'); return; }
     clearTimeout(reconnectTimer); suspended = false;
@@ -532,6 +545,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
         const token = epoch;
         if (!wasPaused && lastAudio) void playAudio(lastAudio, token).catch(() => { if (token === epoch) { pause(); error('Автоматический звук не включился. Нажмите «Прослушать перевод».'); render(); } });
       } else if (message.type === 'error') {
+        if (demoMode && demoHasResult && ['ROOM_NOT_FOUND','ROOM_EXPIRED'].includes(message.code)) {
+          leave('', true); return;
+        }
         demoEvent('error', {code:typeof message.code === 'string' && /^[A-Z_]{1,80}$/.test(message.code) ? message.code : 'TRANSLATION_FAILED'});
         if (['ROOM_NOT_FOUND','INVALID_MEMBER_TOKEN','ROOM_EXPIRED'].includes(message.code)) {
           leave(resuming ? 'Сохранённая комната уже закрыта или время возврата истекло. Попросите новое приглашение.' : errorMessages[message.code]); return;
