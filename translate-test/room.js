@@ -108,6 +108,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
   let peerLanguage = normalizeLanguage(fragment.get('peer')) || 'nb';
   const voiceProfiles = new Set(['auto','soft','low']);
   let selectedVoiceProfile = 'auto';
+  let selectedTranslationMode = (fragment.get('mode') || new URLSearchParams(location.search).get('mode')) === 'phrase' ? 'phrase' : 'stream';
+  let translationMode = 'phrase';
   const voiceLabels = {marin:'Мягкий голос',cedar:'Низкий голос'};
   if (!languageByCode.has(peerLanguage) || peerLanguage === selectedLanguage) peerLanguage = selectedLanguage === 'ru' ? 'nb' : 'ru';
   if (pilotToken) { selectedLanguage = 'ru'; peerLanguage = 'nb'; }
@@ -118,6 +120,9 @@ import { LANGUAGE_CATALOG } from './languages.js';
   let trial = false, trialRemainingTurns = 0, autoLanguage = false;
   let epoch = 0, recorder, context, playback, lastAudio, recordingTimer, timerInterval;
   let active = false, restartTimer, demoHasResult = false, demoCompleted = false, hasIncoming = false;
+  let ownStreamId = null, fixtureTimer, incomingStream = null;
+  const streamSources = new Set(), ignoredStreams = new Set();
+  const streamChunkBytes = 6400, maxStreamOutputBytes = 2000000;
   const resumeKey = demoMode ? 'translator-room-seat-demo-v1' : 'translator-room-seat-v1';
   const resumeGraceMs = 120000;
   let reservation, reconnectTimer, reconnectDeadline = 0, reconnectAttempt = 0, suspended = false;
@@ -137,15 +142,16 @@ import { LANGUAGE_CATALOG } from './languages.js';
       && Number.isFinite(saved.expiresAt) && saved.expiresAt > Date.now() && saved.expiresAt <= Date.now() + resumeGraceMs
       && (!incoming.roomId || incoming.roomId === saved.roomId)) {
       reservation = {roomId:saved.roomId, memberToken:saved.memberToken, language:saved.language,
-        peerLanguage:saved.peerLanguage, voiceProfile:voiceProfiles.has(saved.voiceProfile) ? saved.voiceProfile : 'auto', expiresAt:saved.expiresAt};
+        peerLanguage:saved.peerLanguage, voiceProfile:voiceProfiles.has(saved.voiceProfile) ? saved.voiceProfile : 'auto', translationMode:saved.translationMode === 'stream' ? 'stream' : 'phrase', expiresAt:saved.expiresAt};
       selectedLanguage = saved.language; peerLanguage = saved.peerLanguage;
       selectedVoiceProfile = reservation.voiceProfile;
+      selectedTranslationMode = reservation.translationMode;
     } else if (saved) { sessionStorage.removeItem(resumeKey); }
   } catch {}
 
   function error(message = '') { $('error').textContent = message.slice(0, 500); $('error').hidden = !message; }
   function status(message, style = '') { $('status').textContent = message; $('statusDot').className = `dot ${style}`; }
-  function canSpeak() { return !!room && socket?.readyState === WebSocket.OPEN && ready && speechReady && !busy && !awaiting && !playback && !playbackPending && !capturePending; }
+  function canSpeak() { return !!room && socket?.readyState === WebSocket.OPEN && ready && speechReady && !busy && !awaiting && !playback && !playbackPending && !capturePending && !incomingStream && !streamSources.size; }
   function render() {
     $('connect').disabled = connecting || invalidInvite;
     $('connect').textContent = reservation ? 'Вернуться в разговор' : 'Начать разговор';
@@ -153,14 +159,15 @@ import { LANGUAGE_CATALOG } from './languages.js';
     $('languageSearch').disabled = connecting;
     $('peerLanguage').disabled = connecting;
     $('voiceProfile').disabled = connecting;
+    $('translationMode').disabled = connecting;
     $('record').hidden = demoCompleted || (active && !paused);
     const connected = socket?.readyState === WebSocket.OPEN;
     $('record').disabled = !room || connecting || (connected && !speechReady);
     $('record').textContent = connected ? 'Продолжить разговор' : 'Восстановить соединение';
-    $('pause').disabled = !(active || recorder || capturePending || playback || playbackPending || awaiting);
-    $('pause').hidden = demoCompleted && !playback && !playbackPending;
+    $('pause').disabled = !(active || recorder || capturePending || playback || playbackPending || awaiting || incomingStream || streamSources.size);
+    $('pause').hidden = demoCompleted && !playback && !playbackPending && !streamSources.size;
     $('repeat').hidden = !lastAudio || !!recorder || capturePending;
-    $('repeat').disabled = !!playback || playbackPending || awaiting || busy;
+    $('repeat').disabled = !!playback || playbackPending || awaiting || busy || !!incomingStream || !!streamSources.size;
     demoEvent('availability', {speakable:canSpeak()});
     if (!room) {
       if (demoMode && lastAudio) status(playback || playbackPending ? 'Звучит полученный перевод' : 'Проба завершена · запись можно прослушать', playback || playbackPending ? 'active' : '');
@@ -174,6 +181,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     }
     if (recorder) status(recorder.hasSpeech ? 'Слушаю фразу…' : 'Говорите — я слушаю', 'recording');
     else if (capturePending) status('Подключаю микрофон…');
+    else if (incomingStream || streamSources.size) status(streamSources.size ? 'Звучит потоковый перевод' : 'Перевод появляется во время речи…', 'active');
     else if (playback || playbackPending) status('Звучит перевод', 'active');
     else if (awaiting) status('Перевожу фразу…', 'active');
     else if (demoMode && busy) status('Перевожу фразу…', 'active');
@@ -188,7 +196,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
       ? 'Платная голосовая проба сейчас закрыта. Микрофон не включён. Соединение комнаты можно проверить бесплатно.'
       : !ready ? 'Отправьте приглашение на второй телефон. Язык собеседника уже выбран.'
       : 'Говорите по очереди. После короткой паузы фраза отправится сама. «Пауза» выключает микрофон.';
-    if (autoLanguage && speechReady) $('help').textContent += ' Язык речи определится автоматически среди двух языков разговора.';
+    if (translationMode === 'stream' && speechReady) $('help').textContent = 'Перевод на язык собеседника — во время речи. Короткая пауза завершает реплику. «Пауза» выключает микрофон и весь звук.';
+    else if (autoLanguage && speechReady) $('help').textContent += ' Язык речи определится автоматически среди двух языков разговора.';
     if (demoMode) $('help').textContent = 'Тестовая запись · микрофон выключен. ' + $('help').textContent;
   }
   function send(message) {
@@ -220,6 +229,62 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   function stopPlayback() {
     if (playback) { playback.onended = null; try { playback.stop(); } catch {} playback.disconnect(); playback = null; }
+  }
+  function ignoreStream(id) {
+    if (id) ignoredStreams.add(id);
+    if (ignoredStreams.size > 64) ignoredStreams.delete(ignoredStreams.values().next().value);
+  }
+  function stopStreamOutput() {
+    ignoreStream(incomingStream?.id); incomingStream = null;
+    for (const source of streamSources) { source.onended = null; try { source.stop(); } catch {} source.disconnect(); }
+    streamSources.clear();
+  }
+  function completeIncoming(stream) {
+    if (incomingStream !== stream || !stream.finalReady || streamSources.size) return;
+    incomingStream = null; ignoreStream(stream.id); render(); scheduleListening(350);
+  }
+  function failStream(message) {
+    pause(); error(message || 'Поток остановлен. Автоматического повтора нет.'); render();
+  }
+  function beginIncoming(message) {
+    const id = message.requestId;
+    if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id) || ignoredStreams.has(id)) return;
+    if (incomingStream?.id === id) return;
+    if (paused || document.hidden) { ignoreStream(id); try { send({type:'cancel',requestId:id}); } catch {} return; }
+    ++epoch; clearTimeout(restartTimer); clearTimeout(fixtureTimer); capturePending = false;
+    discardRecording(); stopPlayback(); stopStreamOutput();
+    if (ownStreamId) { try { send({type:'cancel',requestId:ownStreamId}); } catch {} }
+    ownStreamId = null; awaiting = false; pendingRequestId = null; lastAudio = null;
+    incomingStream = {id,sequence:0,token:epoch,chain:Promise.resolve(),queuedBytes:0,totalBytes:0,nextTime:0,finalReady:false};
+    showTranscript({...message,sourceText:'',translatedText:'',streamed:true,partial:true}); render();
+  }
+  function queueIncomingAudio(message) {
+    const stream = incomingStream;
+    if (!stream || stream.id !== message.requestId || ignoredStreams.has(stream.id)) return;
+    if(stream.receivedEnd){failStream('Звуковой пакет пришёл после завершения потока. Повтора нет.');return;}
+    if (message.sequence !== stream.sequence || !Number.isInteger(message.sequence)) { failStream('Порядок звуковых пакетов нарушен. Повтор автоматически не запущен.'); return; }
+    const audio = message.audio;
+    if (!audio || audio.encoding !== 'pcm16' || audio.sampleRate !== 24000 || audio.channels !== 1 || typeof audio.data !== 'string' || audio.data.length > 2666668) { failStream(); return; }
+    let bytes;
+    try { bytes = base64ToBytes(audio.data); } catch { failStream(); return; }
+    if (!bytes.length || bytes.length % 2 || bytesToBase64(bytes) !== audio.data || stream.totalBytes + bytes.length > maxStreamOutputBytes) { failStream('Поток превысил допустимый размер. Повтор автоматически не запущен.'); return; }
+    stream.sequence++; stream.totalBytes += bytes.length; stream.queuedBytes += bytes.length;
+    stream.chain = stream.chain.then(async () => {
+      if (incomingStream !== stream || stream.token !== epoch || paused) return;
+      await unlockAudio(stream.token);
+      if (incomingStream !== stream || stream.token !== epoch || paused || document.hidden) return;
+      if (context.state !== 'running') throw new Error('Нажмите «Продолжить разговор», чтобы включить звук.');
+      const now = context.currentTime;
+      const at = Math.max(now + .025, stream.nextTime);
+      const duration = bytes.length / 48000;
+      if (at + duration - now > 12 || stream.queuedBytes > maxStreamOutputBytes) throw new Error('Слишком много звука в очереди. Поток остановлен без повтора.');
+      const buffer = context.createBuffer(1,bytes.length / 2,24000), samples = buffer.getChannelData(0), view = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+      for (let i=0;i<samples.length;i++) samples[i] = view.getInt16(i*2,true) / 32768;
+      const source = context.createBufferSource(); source.buffer = buffer; source.connect(context.destination);
+      streamSources.add(source); stream.nextTime = at + duration;
+      source.onended = () => { streamSources.delete(source); stream.queuedBytes -= bytes.length; source.disconnect(); if (incomingStream === stream) { completeIncoming(stream); render(); } };
+      source.start(at); render();
+    }).catch(cause => { if (incomingStream === stream && stream.token === epoch) failStream(cause.message); });
   }
   async function playAudio(audio, token = epoch, allowPaused = false) {
     if (!audio || audio.encoding !== 'wav') throw new Error('Сервер вернул неподдерживаемую озвучку.');
@@ -275,6 +340,11 @@ import { LANGUAGE_CATALOG } from './languages.js';
   function finishRecording() {
     const current = discardRecording();
     if (!current) return;
+    if (current.streamId && ownStreamId === current.streamId) {
+      try { flushStreamCapture(current,true); send({type:'stream_end',requestId:current.streamId}); }
+      catch (cause) { failStream(cause.message); }
+      render(); return;
+    }
     if (!current.hasSpeech || current.voicedSamples < current.rate * 0.15) { render(); scheduleListening(); return; }
     if (!canSpeak()) { error('Состояние комнаты изменилось. Фраза не отправлена.'); render(); return; }
     const bytes = resample(current.chunks, current.rate);
@@ -285,6 +355,45 @@ import { LANGUAGE_CATALOG } from './languages.js';
       send({type: 'audio', requestId, audio: {encoding: 'pcm16', sampleRate: limits.rate, channels: 1, data: bytesToBase64(bytes)}});
     } catch (cause) { awaiting = false; pendingRequestId = null; pause(); error(cause.message); }
     render();
+  }
+  function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+  function startOwnStream() {
+    if (!canSpeak()) throw new Error('Комната пока не готова к потоку.');
+    const id = requestId(); ownStreamId = id; awaiting = true; pendingRequestId = id;
+    send({type:'stream_start',requestId:id}); return id;
+  }
+  function sendInputChunk(id,bytes) {
+    if (socket?.bufferedAmount > 256000) throw new Error('Сеть не успевает передавать звук. Поток остановлен без повтора.');
+    send({type:'stream_chunk',requestId:id,audio:{encoding:'pcm16',sampleRate:16000,channels:1,data:bytesToBase64(bytes)}});
+  }
+  function flushStreamCapture(current,final=false) {
+    const bytes = resample(current.chunks,current.rate);
+    while (bytes.length-current.sentBytes >= streamChunkBytes || (final && bytes.length > current.sentBytes)) {
+      const end = Math.min(bytes.length,current.sentBytes+streamChunkBytes);
+      sendInputChunk(current.streamId,bytes.subarray(current.sentBytes,end)); current.sentBytes = end;
+    }
+  }
+  function streamFixture(bytes) {
+    let voiced = 0, start = -1;
+    const view = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    for(let offset=0;offset<bytes.length;offset+=3200){
+      const count = Math.min(1600,(bytes.length-offset)/2); let energy=0;
+      for(let i=0;i<count;i++){const n=view.getInt16(offset+i*2,true)/32768;energy+=n*n;}
+      if(Math.sqrt(energy/count)>=.018){if(start<0)start=Math.max(0,offset-6400);voiced+=count;if(voiced>=2400)break;}
+    }
+    if(voiced<2400){demoEvent('error',{code:'DEMO_NO_SPEECH'});return;}
+    const pcm=bytes.subarray(start,Math.min(bytes.length,start+320000));
+    paused=false;active=true;
+    const token=epoch,id=startOwnStream();let offset=0;
+    const next=()=>{
+      if(token!==epoch||ownStreamId!==id||!room||paused||document.hidden)return;
+      try{
+        if(offset>=pcm.length){send({type:'stream_end',requestId:id});render();return;}
+        const end=Math.min(pcm.length,offset+streamChunkBytes);sendInputChunk(id,pcm.subarray(offset,end));offset=end;
+        fixtureTimer=setTimeout(next,200);
+      }catch(cause){failStream(cause.message);}
+    };
+    next();demoEvent('fixture_sent',{bytes:pcm.length});render();
   }
   function scheduleListening(delay = 100) {
     clearTimeout(restartTimer);
@@ -312,7 +421,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       const processor = context.createScriptProcessor(4096, 1, 1);
       const silence = context.createGain(); silence.gain.value = 0;
       const current = {stream, input, processor, silence, chunks: [], preRoll: [], rate: context.sampleRate,
-        count: 0, hasSpeech: false, voicedSamples: 0, silentSamples: 0};
+        count: 0, hasSpeech: false, voicedSamples: 0, silentSamples: 0,streamId:null,sentBytes:0};
       recorder = current;
       processor.onaudioprocess = (event) => {
         if (recorder !== current || !active || paused) return;
@@ -321,7 +430,12 @@ import { LANGUAGE_CATALOG } from './languages.js';
         for (const value of raw) energy += value * value;
         const voiced = Math.sqrt(energy / raw.length) >= 0.018;
         if (!current.hasSpeech) {
-          if (!voiced) { current.preRoll.push(raw.slice()); if (current.preRoll.length > 2) current.preRoll.shift(); return; }
+          if (!voiced) {
+            current.preRoll.push(raw.slice());
+            let excess=current.preRoll.reduce((sum,part)=>sum+part.length,0)-Math.floor(current.rate*.2);
+            while(excess>0){const first=current.preRoll[0];if(first.length<=excess){current.preRoll.shift();excess-=first.length;}else{current.preRoll[0]=first.slice(excess);excess=0;}}
+            return;
+          }
           current.hasSpeech = true;
           current.chunks = current.preRoll; current.preRoll = [];
           current.count = current.chunks.reduce((n, chunk) => n + chunk.length, 0);
@@ -333,7 +447,13 @@ import { LANGUAGE_CATALOG } from './languages.js';
         current.chunks.push(chunk); current.count += chunk.length;
         if (voiced) { current.voicedSamples += chunk.length; current.silentSamples = 0; }
         else current.silentSamples += chunk.length;
-        $('timer').textContent = `Фраза: ${Math.min(limits.seconds, Math.floor(current.count / current.rate))} / ${limits.seconds} с · отправка после паузы`;
+        if(translationMode==='stream'){
+          try{
+            if(!current.streamId && current.voicedSamples>=current.rate*.15) current.streamId=startOwnStream();
+            if(current.streamId)flushStreamCapture(current);
+          }catch(cause){failStream(cause.message);return;}
+        }
+        $('timer').textContent = `Фраза: ${Math.min(limits.seconds, Math.floor(current.count / current.rate))} / ${limits.seconds} с · ${translationMode==='stream'?'звук передаётся во время речи':'отправка после паузы'}`;
         if (current.count >= limits.seconds * current.rate || current.silentSamples >= current.rate * 0.8) finishRecording();
       };
       input.connect(processor); processor.connect(silence); silence.connect(context.destination);
@@ -352,17 +472,19 @@ import { LANGUAGE_CATALOG } from './languages.js';
     void unlockAudio().catch(() => { if (token === epoch) { pause(); error('Не удалось включить звук. Откройте ссылку в Safari или Chrome.'); } });
     render(); scheduleListening();
   }
-  function pause() {
+  function pause(notify = true) {
+    const incomingId = incomingStream?.id;
     ++epoch; active = false; paused = true; capturePending = false; playbackPending = false;
-    clearTimeout(restartTimer);
-    if (awaiting && pendingRequestId && socket?.readyState === WebSocket.OPEN) {
-      try { send({type: 'cancel', requestId: pendingRequestId}); } catch {}
+    clearTimeout(restartTimer); clearTimeout(fixtureTimer);
+    if (notify && socket?.readyState === WebSocket.OPEN) {
+      for (const id of new Set([pendingRequestId,incomingId].filter(Boolean))) { try { send({type:'cancel',requestId:id}); } catch {} }
     }
+    ownStreamId = null;
     awaiting = false; pendingRequestId = null;
-    discardRecording(); stopPlayback(); render();
+    discardRecording(); stopPlayback(); stopStreamOutput(); render();
   }
   function markDemoResult(message) {
-    if (demoMode && typeof message.sourceText === 'string' && message.sourceText.trim()
+    if (demoMode && !message.partial && (message.streamed || (typeof message.sourceText === 'string' && message.sourceText.trim()))
       && typeof message.translatedText === 'string' && message.translatedText.trim()
       && languageByCode.has(message.sourceLanguage) && languageByCode.has(message.targetLanguage)
       && message.sourceLanguage !== message.targetLanguage) demoHasResult = true;
@@ -371,9 +493,12 @@ import { LANGUAGE_CATALOG } from './languages.js';
     markDemoResult(message); hasIncoming = true;
     $('incomingPanel').hidden = false; $('outgoingPanel').open = false;
     for (const [id, value] of [['sourceText', message.sourceText], ['translatedText', message.translatedText]]) {
-      if (typeof value === 'string') { $(id).textContent = value.slice(0, 12000); $(id).classList.remove('placeholder'); }
+      if (typeof value === 'string') {
+        $(id).textContent = message.streamed && !value.trim() ? (id==='sourceText' ? 'Исходный текст недоступен в потоковом режиме' : 'Перевод появляется во время речи…') : value.slice(0,12000);
+        $(id).classList.remove('placeholder');
+      }
     }
-    $('sourceTitle').textContent = `Собеседник сказал · ${names[message.sourceLanguage] || 'речь'}`;
+    $('sourceTitle').textContent = message.streamed && !message.sourceText?.trim() ? 'Собеседник сказал' : `Собеседник сказал · ${names[message.sourceLanguage] || 'речь'}`;
     $('translationTitle').textContent = `Перевод для вас · ${names[message.targetLanguage] || 'текст'}`;
     const voiceLabel = typeof message.selectedVoice === 'string' && Object.hasOwn(voiceLabels, message.selectedVoice) ? voiceLabels[message.selectedVoice] : '';
     $('voiceBadge').textContent = voiceLabel;
@@ -381,7 +506,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   function showOutgoing(message) {
     markDemoResult(message);
-    const source = typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '';
+    const source = message.streamed && (typeof message.sourceText!=='string'||!message.sourceText.trim()) ? 'Исходный текст недоступен в потоковом режиме' : typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '';
     const translated = typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '';
     $('outgoingPanel').hidden = false; $('outgoingPanel').open = !hasIncoming;
     $('outgoingSummary').textContent = `Вы сказали: ${source.slice(0,90)}${source.length > 90 ? '…' : ''}`;
@@ -400,7 +525,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     });
   }
   function replayLastAudio() {
-    if (!lastAudio || playback || playbackPending || awaiting || busy) {
+    if (!lastAudio || playback || playbackPending || awaiting || busy || incomingStream || streamSources.size) {
       demoEvent('error', {code:'DEMO_REPLAY_UNAVAILABLE'}); return;
     }
     ++epoch; clearTimeout(restartTimer); discardRecording(); error();
@@ -499,8 +624,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
       if (socket !== current) return;
       const language = $('language').value;
       send(resuming ? {type:'resume',roomId:reservation.roomId,memberToken:reservation.memberToken}
-        : incoming.roomId && incoming.inviteToken ? {type: 'join', ...incoming, language, voiceProfile:selectedVoiceProfile}
-        : {type: 'create', language, autoLanguage:true, voiceProfile:selectedVoiceProfile, ...(pilotToken ? {pilotToken} : {})});
+        : incoming.roomId && incoming.inviteToken ? {type: 'join', ...incoming, language, ...(selectedTranslationMode==='phrase'?{voiceProfile:selectedVoiceProfile}:{})}
+        : {type: 'create', language, translationMode:selectedTranslationMode, autoLanguage:selectedTranslationMode==='phrase', ...(selectedTranslationMode==='phrase'?{voiceProfile:selectedVoiceProfile}:{}), ...(pilotToken ? {pilotToken} : {})});
     };
     current.onmessage = (event) => {
       if (socket !== current || typeof event.data !== 'string' || event.data.length > 4500000) return;
@@ -510,13 +635,15 @@ import { LANGUAGE_CATALOG } from './languages.js';
       if (message.type === 'joined') {
         if (typeof message.roomId !== 'string' || typeof message.inviteToken !== 'string') { leave('Сервер не создал ссылку комнаты.'); return; }
         clearTimeout(connectionTimer); connecting = false; room = message;
+        translationMode = message.translationMode === 'stream' ? 'stream' : 'phrase';
+        selectedTranslationMode = translationMode; updateMode();
         reconnectDeadline = 0; reconnectAttempt = 0;
         if (typeof message.memberToken === 'string') {
           if (voiceProfiles.has(message.voiceProfile)) {
             selectedVoiceProfile = message.voiceProfile; $('voiceProfile').value = selectedVoiceProfile;
           }
           reservation = {roomId:message.roomId,memberToken:message.memberToken,language:message.language,
-            peerLanguage,voiceProfile:selectedVoiceProfile,expiresAt:Date.now()+resumeGraceMs}; saveReservation();
+            peerLanguage,voiceProfile:selectedVoiceProfile,translationMode,expiresAt:Date.now()+resumeGraceMs}; saveReservation();
         }
         if (resuming) {
           pause();
@@ -524,35 +651,54 @@ import { LANGUAGE_CATALOG } from './languages.js';
           if (!automatic) activate();
         }
         $('setup').hidden = true; $('conversation').hidden = false;
-        const invite = new URL(location.href); invite.hash = new URLSearchParams({room: message.roomId, invite: message.inviteToken, lang: peerLanguage, peer: selectedLanguage}).toString();
+        const invite = new URL(location.href); invite.hash = new URLSearchParams({room: message.roomId, invite: message.inviteToken, lang: peerLanguage, peer: selectedLanguage,mode:translationMode}).toString();
         $('inviteLink').value = invite.href;
         $('languages').textContent = `Ваш язык: ${names[message.language] || names[$('language').value]}`;
-        demoEvent('joined', {roomId:message.roomId,inviteToken:message.inviteToken,language:message.language});
+        demoEvent('joined', {roomId:message.roomId,inviteToken:message.inviteToken,language:message.language,translationMode});
       } else if (message.type === 'state') {
         trial = message.trial === true;
+        translationMode = message.translationMode === 'stream' ? 'stream' : 'phrase';
+        selectedTranslationMode = translationMode; updateMode();
         autoLanguage = message.autoLanguage === true;
         if (voiceProfiles.has(message.voiceProfile)) {
           selectedVoiceProfile = message.voiceProfile; $('voiceProfile').value = selectedVoiceProfile;
           if (reservation) reservation.voiceProfile = selectedVoiceProfile;
         }
         trialRemainingTurns = message.trialRemainingTurns ?? 0;
-        limits.seconds = trial ? 10 : 20; limits.samples = limits.seconds * limits.rate;
+        limits.seconds = trial || translationMode === 'stream' ? 10 : 20; limits.samples = limits.seconds * limits.rate;
         if (!recorder) $('timer').textContent = `Одна фраза — до ${limits.seconds} секунд`;
         ready = message.ready === true; speechReady = message.speechReady === true; busy = message.busy === true;
-        if (reservation) { reservation.expiresAt = Date.now() + resumeGraceMs; saveReservation(); }
-        if (!ready || !speechReady || busy) {
+        if (reservation) { reservation.expiresAt = Date.now() + resumeGraceMs; reservation.translationMode=translationMode; saveReservation(); }
+        if (!ready || ((!speechReady || busy) && !ownStreamId)) {
+          if (!ready && ownStreamId) pause();
           if (recorder || capturePending) { ++epoch; capturePending = false; discardRecording(); }
           clearTimeout(restartTimer);
         }
         $('languages').textContent = `Ваш язык: ${names[room?.language] || names[$('language').value]}${names[message.peerLanguage] ? ` · Собеседник: ${names[message.peerLanguage]}` : ''}`;
-        demoEvent('state', {ready,speechReady,busy,remaining:trialRemainingTurns,trialRemainingTurns,autoLanguage});
+        demoEvent('state', {ready,speechReady,busy,remaining:trialRemainingTurns,trialRemainingTurns,autoLanguage,translationMode});
       } else if (message.type === 'delivered') {
         if (!pendingRequestId || message.requestId !== pendingRequestId) return;
         awaiting = false; pendingRequestId = null;
-        showOutgoing(message);
+        ownStreamId=null; clearTimeout(fixtureTimer);
+        showOutgoing({...message,streamed:translationMode==='stream'});
         demoTextEvent('delivered', message);
       } else if (message.type === 'cancelled') {
         if (pendingRequestId && message.requestId === pendingRequestId) { awaiting = false; pendingRequestId = null; }
+      } else if (message.type === 'stream_begin') {
+        beginIncoming(message);
+      } else if (message.type === 'stream_audio') {
+        queueIncomingAudio(message);
+      } else if (message.type === 'stream_text') {
+        if(incomingStream?.id===message.requestId&&!incomingStream.receivedEnd)showTranscript({...message,streamed:true,partial:true});
+      } else if (message.type === 'stream_end') {
+        const stream=incomingStream;
+        if(!stream||stream.id!==message.requestId||stream.token!==epoch||paused||stream.receivedEnd)return;
+        stream.receivedEnd=true;
+        if(!message.audio||message.audio.encoding!=='wav'||typeof message.audio.data!=='string'||message.audio.data.length>2666668){failStream();return;}
+        showTranscript({...message,streamed:true});lastAudio=message.audio;demoTextEvent('translation',message);
+        stream.chain=stream.chain.then(()=>{if(incomingStream===stream){stream.finalReady=true;completeIncoming(stream);}});
+      } else if (message.type === 'stream_cancelled') {
+        if(message.requestId===ownStreamId||message.requestId===incomingStream?.id){pause(false);error('Поток остановлен. Автоматического повтора нет.');}
       } else if (message.type === 'translation') {
         const wasPaused = paused;
         ++epoch; capturePending = false; clearTimeout(restartTimer); discardRecording(); stopPlayback();
@@ -605,6 +751,10 @@ import { LANGUAGE_CATALOG } from './languages.js';
     try { bytes = base64ToBytes(audio.data); } catch { demoEvent('error', {code:'DEMO_INVALID_AUDIO'}); return; }
     if (bytes.length < 3200 || bytes.length > 320000 || bytes.length % 2 || bytesToBase64(bytes) !== audio.data) {
       demoEvent('error', {code:'DEMO_INVALID_AUDIO'}); return;
+    }
+    if(translationMode==='stream'){
+      try{streamFixture(bytes);}catch(cause){failStream(cause.message);demoEvent('error',{code:'DEMO_SEND_FAILED'});}
+      return;
     }
     const requestId = `demo-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     try {
@@ -687,6 +837,13 @@ import { LANGUAGE_CATALOG } from './languages.js';
   }
   $('peerLanguage').value = peerLanguage;
   $('voiceProfile').value = selectedVoiceProfile;
+  function updateMode(){
+    $('translationMode').value=selectedTranslationMode;
+    $('voiceSettings').hidden=selectedTranslationMode==='stream';
+    $('modeHint').textContent=selectedTranslationMode==='stream'?'Перевод на язык собеседника. Потоковый голос выбирает сервис; ручной профиль здесь не применяется.':'Реплика переводится после паузы. Язык определяется среди двух языков разговора.';
+  }
+  $('translationMode').addEventListener('change',()=>{if(['phrase','stream'].includes($('translationMode').value)){selectedTranslationMode=$('translationMode').value;updateMode();}});
+  updateMode();
   $('voiceProfile').addEventListener('change', () => {
     if (voiceProfiles.has($('voiceProfile').value)) selectedVoiceProfile = $('voiceProfile').value;
   });
@@ -720,4 +877,3 @@ import { LANGUAGE_CATALOG } from './languages.js';
     demoEvent('loaded');
   }
 })();
-

@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Комната перевода</title>
   <link rel="stylesheet" href="./room.css?v=e7d243b68fe3">
-  <script src="./room.js?v=bb438731f5f1" type="module"></script>
+  <script src="./room.js?v=ddf659bdd078" type="module"></script>
 </head>
 <body>
 <main>
@@ -28,9 +28,13 @@
     <select id="language" aria-describedby="languageHint" disabled><option value="">Загружаем языки…</option></select>
     <p id="languageHint" class="hint languageHint"></p>
     <label for="peerLanguage">Язык собеседника</label><select id="peerLanguage"></select>
+    <label for="translationMode">Режим перевода</label><select id="translationMode"><option value="stream">Во время речи</option><option value="phrase">После фразы</option></select>
+    <p id="modeHint" class="hint languageHint">Перевод на язык собеседника. Потоковый голос выбирает сервис; ручной профиль действует в режиме «После фразы».</p>
+    <div id="voiceSettings">
     <label for="voiceProfile">Голос перевода моих реплик</label>
     <select id="voiceProfile" aria-describedby="voiceProfileHint"><option value="auto">Авто по тембру</option><option value="soft">Мягкий голос</option><option value="low">Низкий голос</option></select>
     <p id="voiceProfileHint" class="hint languageHint">Подбираем похожую подачу, не копируем голос человека. Выбор можно поправить.</p>
+    </div>
     </details>
     <noscript><p class="hint">Для выбора языков и подключения включите JavaScript.</p></noscript>
     <p id="setupHint" class="hint">Отправьте собеседнику приглашение из комнаты. Его язык уже будет выбран.</p>
@@ -65,4 +69,3 @@
 </main>
 </body>
 </html>
-
