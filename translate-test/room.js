@@ -117,7 +117,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
   let connecting = false, awaiting = false, pendingRequestId, paused = false, capturePending = false, playbackPending = false;
   let trial = false, trialRemainingTurns = 0, autoLanguage = false;
   let epoch = 0, recorder, context, playback, lastAudio, recordingTimer, timerInterval;
-  let active = false, restartTimer, demoHasResult = false, demoCompleted = false;
+  let active = false, restartTimer, demoHasResult = false, demoCompleted = false, hasIncoming = false;
   const resumeKey = demoMode ? 'translator-room-seat-demo-v1' : 'translator-room-seat-v1';
   const resumeGraceMs = 120000;
   let reservation, reconnectTimer, reconnectDeadline = 0, reconnectAttempt = 0, suspended = false;
@@ -361,19 +361,34 @@ import { LANGUAGE_CATALOG } from './languages.js';
     awaiting = false; pendingRequestId = null;
     discardRecording(); stopPlayback(); render();
   }
-  function showTranscript(message) {
+  function markDemoResult(message) {
     if (demoMode && typeof message.sourceText === 'string' && message.sourceText.trim()
       && typeof message.translatedText === 'string' && message.translatedText.trim()
       && languageByCode.has(message.sourceLanguage) && languageByCode.has(message.targetLanguage)
       && message.sourceLanguage !== message.targetLanguage) demoHasResult = true;
+  }
+  function showTranscript(message) {
+    markDemoResult(message); hasIncoming = true;
+    $('incomingPanel').hidden = false; $('outgoingPanel').open = false;
     for (const [id, value] of [['sourceText', message.sourceText], ['translatedText', message.translatedText]]) {
       if (typeof value === 'string') { $(id).textContent = value.slice(0, 12000); $(id).classList.remove('placeholder'); }
     }
-    $('sourceTitle').textContent = `Оригинал · ${names[message.sourceLanguage] || 'речь'}`;
-    $('translationTitle').textContent = `Перевод · ${names[message.targetLanguage] || 'текст'}`;
+    $('sourceTitle').textContent = `Собеседник сказал · ${names[message.sourceLanguage] || 'речь'}`;
+    $('translationTitle').textContent = `Перевод для вас · ${names[message.targetLanguage] || 'текст'}`;
     const voiceLabel = typeof message.selectedVoice === 'string' && Object.hasOwn(voiceLabels, message.selectedVoice) ? voiceLabels[message.selectedVoice] : '';
     $('voiceBadge').textContent = voiceLabel;
     $('voiceBadge').hidden = !voiceLabel;
+  }
+  function showOutgoing(message) {
+    markDemoResult(message);
+    const source = typeof message.sourceText === 'string' ? message.sourceText.slice(0,12000) : '';
+    const translated = typeof message.translatedText === 'string' ? message.translatedText.slice(0,12000) : '';
+    $('outgoingPanel').hidden = false; $('outgoingPanel').open = !hasIncoming;
+    $('outgoingSummary').textContent = `Вы сказали: ${source.slice(0,90)}${source.length > 90 ? '…' : ''}`;
+    $('outgoingSourceText').textContent = source; $('outgoingTranslatedText').textContent = translated;
+    $('outgoingSourceTitle').textContent = `Вы сказали · ${names[message.sourceLanguage] || 'речь'}`;
+    $('outgoingTranslationTitle').textContent = `Собеседник услышит · ${names[message.targetLanguage] || 'текст'}`;
+    $('incomingPanel').hidden = !hasIncoming;
   }
   function demoTextEvent(event, message) {
     demoEvent(event, {
@@ -406,7 +421,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
     if (demoMode && demoHasResult && completed && !demoCompleted) {
       demoCompleted = true; demoEvent('completed');
     }
-    const keepDemoEvidence = demoMode && (lastAudio || !$('translatedText').classList.contains('placeholder'));
+    const keepDemoEvidence = demoMode && demoHasResult;
     cleanup(); clearReservation();
     if (keepDemoEvidence) {
       $('setup').hidden = true; $('conversation').hidden = false; $('inviteLink').value = '';
@@ -423,6 +438,8 @@ import { LANGUAGE_CATALOG } from './languages.js';
       : 'Отправьте собеседнику приглашение из комнаты. Его язык уже будет выбран.';
     $('inviteLink').value = '';
     $('voiceBadge').hidden = true; $('voiceBadge').textContent = '';
+    hasIncoming = false; $('incomingPanel').hidden = true; $('outgoingPanel').hidden = true; $('outgoingPanel').open = false;
+    $('outgoingSummary').textContent = 'Вы сказали'; $('outgoingSourceText').textContent = ''; $('outgoingTranslatedText').textContent = '';
     $('sourceText').textContent = 'Здесь появится произнесённая фраза'; $('sourceText').classList.add('placeholder');
     $('translatedText').textContent = 'Здесь появится перевод'; $('translatedText').classList.add('placeholder');
     render(); error(message);
@@ -532,8 +549,7 @@ import { LANGUAGE_CATALOG } from './languages.js';
       } else if (message.type === 'delivered') {
         if (!pendingRequestId || message.requestId !== pendingRequestId) return;
         awaiting = false; pendingRequestId = null;
-        if (!demoMode) lastAudio = null;
-        showTranscript(message);
+        showOutgoing(message);
         demoTextEvent('delivered', message);
       } else if (message.type === 'cancelled') {
         if (pendingRequestId && message.requestId === pendingRequestId) { awaiting = false; pendingRequestId = null; }

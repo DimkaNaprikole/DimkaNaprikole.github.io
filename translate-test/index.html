@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Комната перевода</title>
-  <link rel="stylesheet" href="./room.css?v=df87dd6ec862">
-  <script src="./room.js?v=92d164cc35d9" type="module"></script>
+  <link rel="stylesheet" href="./room.css?v=e7d243b68fe3">
+  <script src="./room.js?v=bb438731f5f1" type="module"></script>
 </head>
 <body>
 <main>
@@ -49,8 +49,15 @@
     <div class="statusBox" role="status" aria-live="polite"><span id="statusDot" class="dot"></span><span id="status">Подключение…</span></div>
     <p id="voiceBadge" class="hint voiceBadge" hidden></p>
     <p id="help" class="hint help"></p>
-    <section class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Оригинал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
-    <section class="card transcript translated" aria-labelledby="translationTitle"><p id="translationTitle" class="eyebrow">Перевод</p><p id="translatedText" class="speechText placeholder" dir="auto">Здесь появится перевод</p><button id="repeat" class="secondary" hidden>Прослушать перевод</button></section>
+    <div id="incomingPanel" hidden>
+      <section class="card transcript" aria-labelledby="sourceTitle"><p id="sourceTitle" class="eyebrow">Собеседник сказал</p><p id="sourceText" class="speechText placeholder" dir="auto">Здесь появится произнесённая фраза</p></section>
+      <section class="card transcript translated" aria-labelledby="translationTitle"><p id="translationTitle" class="eyebrow">Перевод для вас</p><p id="translatedText" class="speechText placeholder" dir="auto">Здесь появится перевод</p><button id="repeat" class="secondary" hidden>Прослушать перевод</button></section>
+    </div>
+    <details id="outgoingPanel" class="card outgoing" hidden>
+      <summary id="outgoingSummary">Вы сказали</summary>
+      <p id="outgoingSourceTitle" class="eyebrow">Вы сказали</p><p id="outgoingSourceText" class="outgoingText" dir="auto"></p>
+      <p id="outgoingTranslationTitle" class="eyebrow">Собеседник услышит</p><p id="outgoingTranslatedText" class="outgoingText" dir="auto"></p>
+    </details>
     <div class="controls"><button id="record" class="primary" disabled>Продолжить разговор</button><button id="pause" class="secondary" disabled>Пауза</button><p id="timer" class="hint">Одна фраза — до 20 секунд</p></div>
   </section>
   <p id="error" class="error" role="alert" hidden></p>
